@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Posture Monitor</title>
+<style>
+:root {
+  --bg-color: #0b1120;
+  --card-bg: #1e293b;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --accent-cyan: #38bdf8;
+  --accent-blue: #3b82f6;
+  --status-ok: #10b981;
+  --status-alert: #ef4444;
+  --status-paused: #64748b;
+  --border-color: #334155;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  padding: 16px;
+}
+.app-container {
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+header {
+  text-align: center;
+  padding: 12px 0 4px;
+}
+h1 {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+}
+.mode-tabs {
+  display: flex;
+  background: #0f172a;
+  border-radius: 10px;
+  padding: 4px;
+  margin-bottom: 14px;
+}
+.mode-tab {
+  flex: 1;
+  padding: 10px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  transition: all 0.2s ease;
+}
+.mode-tab.active {
+  background: var(--card-bg);
+  color: var(--accent-cyan);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+}
+.conn-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+.dot-green { background: var(--status-ok); box-shadow: 0 0 8px var(--status-ok); }
+.dot-blue { background: var(--accent-blue); box-shadow: 0 0 8px var(--accent-blue); }
+.dot-gray { background: var(--status-paused); }
+.dot-red { background: var(--status-alert); box-shadow: 0 0 8px var(--status-alert); }
+
+.gauge-card {
+  text-align: center;
+  padding: 28px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.gauge-ring {
+  width: 210px;
+  height: 210px;
+  border-radius: 50%;
+  border: 8px solid var(--status-paused);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 20px;
+  transition: border-color 0.3s ease;
+  position: relative;
+}
+.angle-num {
+  font-size: 64px;
+  font-weight: 800;
+  line-height: 1;
+}
+.angle-label {
+  font-size: 13px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  letter-spacing: 1.5px;
+  margin-top: 4px;
+}
+.status-badge {
+  display: inline-block;
+  padding: 6px 18px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.status-ok { background: rgba(16, 185, 129, 0.15); color: var(--status-ok); border: 1px solid rgba(16, 185, 129, 0.3); }
+.status-alert {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--status-alert);
+  border: 1px solid var(--status-alert);
+  animation: pulse 1s infinite alternate;
+}
+@keyframes pulse {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.05); }
+}
+.status-paused { background: rgba(100, 116, 139, 0.15); color: var(--status-paused); border: 1px solid var(--status-paused); }
+
+.btn-group {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+button.action-btn {
+  flex: 1;
+  padding: 15px;
+  border-radius: 12px;
+  border: none;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.1s, opacity 0.2s;
+}
+button.action-btn:active { transform: scale(0.98); }
+.btn-primary {
+  background: linear-gradient(135deg, #38bdf8 0%, #2563eb 100%);
+  color: white;
+}
+.btn-secondary {
+  background: #334155;
+  color: #f1f5f9;
+}
+.btn-ble {
+  background: #2563eb;
+  color: white;
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-ble:hover { background: #1d4ed8; }
+.btn-ble.disconnect { background: #475569; }
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 6px 0;
+}
+.sensor-ok { color: var(--status-ok); font-weight: 600; }
+.sensor-err { color: var(--status-alert); font-weight: 600; }
+
+.help-box {
+  background: rgba(15, 23, 42, 0.7);
+  border-radius: 12px;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.help-box summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent-cyan);
+}
+.help-box p, .help-box ul { margin-top: 8px; }
+.help-box ul { padding-left: 18px; }
+</style>
+</head>
+<body>
+
+<div class="app-container">
+  <header>
+    <h1>Posture Monitor</h1>
+    <div class="subtitle">Dual Wi-Fi & Bluetooth (BLE) Interface</div>
+  </header>
+
+  <!-- Connection Controls -->
+  <div class="card">
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tab-wifi" onclick="selectMode('wifi')">Wi-Fi Mode</button>
+      <button class="mode-tab" id="tab-ble" onclick="selectMode('ble')">Bluetooth (BLE)</button>
+    </div>
+
+    <div class="conn-status-bar">
+      <span id="conn-label"><span class="dot dot-gray" id="conn-dot"></span>Connecting...</span>
+      <span id="transport-badge" style="color: var(--text-secondary); font-size: 11px;">HTTP</span>
+    </div>
+
+    <div id="ble-panel" style="display: none; margin-top: 10px;">
+      <button class="btn-ble" id="btn-ble-toggle" onclick="toggleBle()">Connect via Bluetooth (BLE)</button>
+      <div id="ble-help" style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; text-align: center;">
+        Connect directly without changing your phone's Wi-Fi.
+      </div>
+    </div>
+  </div>
+
+  <!-- Posture Readout -->
+  <div class="card gauge-card">
+    <div class="gauge-ring" id="gauge-ring">
+      <div class="angle-num" id="angle">--°</div>
+      <div class="angle-label">Tilt Angle</div>
+    </div>
+    <div class="status-badge status-paused" id="status">CONNECTING</div>
+  </div>
+
+  <!-- Control Buttons -->
+  <div class="btn-group">
+    <button class="action-btn btn-primary" onclick="handleStart()">Start / Calibrate</button>
+    <button class="action-btn btn-secondary" onclick="handleStop()">Pause</button>
+  </div>
+
+  <!-- Diagnostics -->
+  <div class="card">
+    <div class="info-row">
+      <span>Hardware Sensor</span>
+      <span id="sensor" class="sensor-ok">Checking...</span>
+    </div>
+    <div class="info-row">
+      <span>Active Connection</span>
+      <span id="active-link">Wi-Fi (AP)</span>
+    </div>
+    <div class="info-row">
+      <span>Alert Threshold</span>
+      <span>20.0° (Reset: 12.0°)</span>
+    </div>
+  </div>
+
+  <!-- Help & Tips -->
+  <details class="help-box">
+    <summary>Connection Guide & Compatibility</summary>
+    <p><strong>Wi-Fi Option:</strong> Connect phone to Wi-Fi network <code>Posture-ESP32</code> (Password: <code>Posture2026</code>) and open <code>http://192.168.4.1</code>.</p>
+    <p style="margin-top: 6px;"><strong>BLE Option:</strong> Select the Bluetooth tab and tap 'Connect'. You can keep normal phone internet active!</p>
+    <ul style="margin-top: 6px;">
+      <li><strong>Android:</strong> Works in Chrome, Edge, and Samsung Internet.</li>
+      <li><strong>iPhone / iPad:</strong> Safari does not support Web Bluetooth. Please open this page in the free <em>Bluefy</em> or <em>WebBLE</em> browser app from the App Store.</li>
+      <li><strong>BLE Apps:</strong> You can also connect via <em>nRF Connect</em> or <em>Serial Bluetooth Terminal</em> with Nordic UART UUIDs.</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX_UUID      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify from ESP32
+const NUS_RX_UUID      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Commands to ESP32
+
+let currentMode = 'wifi';
+let isBleConnected = false;
+let bleDevice = null;
+let bleServer = null;
+let bleTxChar = null;
+let bleRxChar = null;
+let wifiPollTimer = null;
+
+function getWifiBaseUrl() {
+  if (window.location.protocol.startsWith('http') && window.location.hostname !== '') {
+    return '';
+  }
+  return 'http://192.168.4.1';
+}
+
+function selectMode(mode) {
+  currentMode = mode;
+  document.getElementById('tab-wifi').className = 'mode-tab' + (mode === 'wifi' ? ' active' : '');
+  document.getElementById('tab-ble').className = 'mode-tab' + (mode === 'ble' ? ' active' : '');
+  document.getElementById('ble-panel').style.display = (mode === 'ble') ? 'block' : 'none';
+
+  if (mode === 'wifi') {
+    document.getElementById('transport-badge').innerText = 'HTTP (Wi-Fi)';
+    startWifiPolling();
+  } else {
+    stopWifiPolling();
+    document.getElementById('transport-badge').innerText = 'BLE (Nordic UART)';
+    if (!isBleConnected) {
+      updateConnStatus('Disconnected from BLE', 'gray');
+      document.getElementById('active-link').innerText = 'Bluetooth (Disconnected)';
+    } else {
+      updateConnStatus('Connected to Posture-ESP32', 'blue');
+      document.getElementById('active-link').innerText = 'Bluetooth (Connected)';
+    }
+  }
+}
+
+function updateConnStatus(text, color) {
+  const dot = document.getElementById('conn-dot');
+  if (dot) dot.className = 'dot dot-' + color;
+  const label = document.getElementById('conn-label');
+  if (label) label.innerHTML = '<span class="dot dot-' + color + '"></span>' + text;
+}
+
+function parseAndApplyData(data) {
+  let d = data;
+  if (typeof d === 'string') {
+    try {
+      d = JSON.parse(d.trim());
+    } catch(e) {
+      return;
+    }
+  }
+  const angle = (typeof d.angle === 'number') ? d.angle : 0;
+  const isTracking = Boolean(d.tracking);
+  const isAlert = Boolean(d.alert);
+  const hasSensor = Boolean(d.sensor);
+
+  document.getElementById('angle').innerText = angle.toFixed(1) + '°';
+
+  const statusEl = document.getElementById('status');
+  const ringEl = document.getElementById('gauge-ring');
+
+  if (!isTracking) {
+    statusEl.innerText = 'PAUSED';
+    statusEl.className = 'status-badge status-paused';
+    ringEl.style.borderColor = 'var(--status-paused)';
+  } else if (isAlert) {
+    statusEl.innerText = 'POSTURE ALERT';
+    statusEl.className = 'status-badge status-alert';
+    ringEl.style.borderColor = 'var(--status-alert)';
+  } else {
+    statusEl.innerText = 'MONITORING';
+    statusEl.className = 'status-badge status-ok';
+    ringEl.style.borderColor = 'var(--status-ok)';
+  }
+
+  const sensorEl = document.getElementById('sensor');
+  sensorEl.innerText = hasSensor ? '● Sensor Connected (MPU-6050)' : '▲ Sensor Unavailable';
+  sensorEl.className = hasSensor ? 'sensor-ok' : 'sensor-err';
+}
+
+// Wi-Fi polling
+function startWifiPolling() {
+  stopWifiPolling();
+  updateWifi();
+  wifiPollTimer = setInterval(updateWifi, 500);
+}
+
+function stopWifiPolling() {
+  if (wifiPollTimer) {
+    clearInterval(wifiPollTimer);
+    wifiPollTimer = null;
+  }
+}
+
+async function updateWifi() {
+  if (currentMode !== 'wifi') return;
+  try {
+    const res = await fetch(getWifiBaseUrl() + '/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    parseAndApplyData(data);
+    updateConnStatus('Wi-Fi Connected', 'green');
+    document.getElementById('active-link').innerText = 'Wi-Fi (AP 192.168.4.1)';
+  } catch(e) {
+    if (currentMode === 'wifi') {
+      updateConnStatus('Wi-Fi Disconnected', 'red');
+      document.getElementById('active-link').innerText = 'Wi-Fi (Unavailable)';
+    }
+  }
+}
+
+// BLE handling
+async function toggleBle() {
+  if (isBleConnected) {
+    disconnectBle();
+  } else {
+    await connectBle();
+  }
+}
+
+async function connectBle() {
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth is not supported on this browser.\n\n• Android: Use Chrome or Edge.\n• iPhone/iPad: Open this page in the Bluefy or WebBLE app.\n• Desktop: Use Chrome or Edge.\n• Or use Wi-Fi Mode at http://192.168.4.1');
+    return;
+  }
+
+  const btn = document.getElementById('btn-ble-toggle');
+  btn.innerText = 'Connecting...';
+
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [
+        { name: 'Posture-ESP32' },
+        { namePrefix: 'Posture' }
+      ],
+      optionalServices: [NUS_SERVICE_UUID]
+    });
+
+    bleDevice.addEventListener('gattserverdisconnected', onBleDisconnected);
+
+    bleServer = await bleDevice.gatt.connect();
+    const service = await bleServer.getPrimaryService(NUS_SERVICE_UUID);
+    bleTxChar = await service.getCharacteristic(NUS_TX_UUID);
+    bleRxChar = await service.getCharacteristic(NUS_RX_UUID);
+
+    await bleTxChar.startNotifications();
+    bleTxChar.addEventListener('characteristicvaluechanged', (ev) => {
+      const text = new TextDecoder().decode(ev.target.value);
+      parseAndApplyData(text);
+    });
+
+    try {
+      const val = await bleTxChar.readValue();
+      parseAndApplyData(new TextDecoder().decode(val));
+    } catch(e) {}
+
+    isBleConnected = true;
+    btn.innerText = 'Disconnect BLE';
+    btn.className = 'btn-ble disconnect';
+    updateConnStatus('Connected to Posture-ESP32', 'blue');
+    document.getElementById('active-link').innerText = 'Bluetooth (Posture-ESP32)';
+  } catch(err) {
+    console.warn('BLE Connect failed or cancelled:', err);
+    btn.innerText = 'Connect via Bluetooth (BLE)';
+    btn.className = 'btn-ble';
+    if (!isBleConnected) {
+      updateConnStatus('BLE Connection Failed', 'gray');
+    }
+  }
+}
+
+function disconnectBle() {
+  if (bleDevice && bleDevice.gatt.connected) {
+    bleDevice.gatt.disconnect();
+  }
+  onBleDisconnected();
+}
+
+function onBleDisconnected() {
+  isBleConnected = false;
+  bleServer = null;
+  bleTxChar = null;
+  bleRxChar = null;
+  const btn = document.getElementById('btn-ble-toggle');
+  if (btn) {
+    btn.innerText = 'Connect via Bluetooth (BLE)';
+    btn.className = 'btn-ble';
+  }
+  if (currentMode === 'ble') {
+    updateConnStatus('BLE Disconnected', 'gray');
+    document.getElementById('active-link').innerText = 'Bluetooth (Disconnected)';
+  }
+}
+
+// Commands
+async function handleStart() {
+  await sendCommand('start');
+}
+
+async function handleStop() {
+  await sendCommand('stop');
+}
+
+async function sendCommand(cmd) {
+  if (currentMode === 'ble') {
+    if (!bleRxChar) {
+      alert('Bluetooth not connected! Please tap "Connect via Bluetooth (BLE)" first, or switch to Wi-Fi mode.');
+      return;
+    }
+    try {
+      const enc = new TextEncoder();
+      await bleRxChar.writeValue(enc.encode(cmd + '\n'));
+    } catch(e) {
+      console.error('BLE write failed:', e);
+    }
+  } else {
+    try {
+      await fetch(getWifiBaseUrl() + '/' + cmd, { method: 'POST' });
+      updateWifi();
+    } catch(e) {
+      console.error('Wi-Fi command failed:', e);
+    }
+  }
+}
+
+// Auto detect mode on page load
+window.addEventListener('DOMContentLoaded', () => {
+  const isHttpLocal = window.location.protocol.startsWith('http') && 
+                      (window.location.hostname === '192.168.4.1' || window.location.hostname === 'localhost');
+  if (isHttpLocal) {
+    selectMode('wifi');
+  } else if (!window.location.protocol.startsWith('http')) {
+    selectMode('ble');
+  } else {
+    selectMode('wifi');
+  }
+});
+</script>
+</body>
+</html>
