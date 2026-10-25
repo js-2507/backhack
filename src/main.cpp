@@ -70,6 +70,115 @@ unsigned long tiltStart = 0;
 unsigned long lastBeep = 0;
 unsigned long lastPrint = 0;
 
+// Latest camera results received from the laptop
+String cameraState = "OFFLINE";
+float cameraHead = 0;
+float cameraShoulder = 0;
+bool cameraSeen = false;
+unsigned long cameraUpdated = 0;
+
+bool cameraFresh() {
+    return cameraSeen && millis() - cameraUpdated < 1500;
+}
+
+String getCameraJson() {
+    bool online = cameraFresh();
+    bool hasAngles = online &&
+        (cameraState == "WITHIN_RANGE" ||
+         cameraState == "CHANGED" ||
+         cameraState == "ALERT");
+
+    String json = "{\"online\":";
+    json += online ? "true" : "false";
+
+    json += ",\"state\":\"";
+    json += online ? cameraState : "OFFLINE";
+    json += "\"";
+
+    json += ",\"head\":";
+    json += hasAngles ? String(cameraHead, 1) : "null";
+
+    json += ",\"shoulder\":";
+    json += hasAngles ? String(cameraShoulder, 1) : "null";
+
+    json += "}";
+    return json;
+}
+
+String getAgreementState() {
+    bool cameraTracking = cameraFresh() &&
+        (cameraState == "WITHIN_RANGE" ||
+         cameraState == "CHANGED" ||
+         cameraState == "ALERT");
+
+    bool wearableTracking = tracking && sensorReady;
+
+    if (!cameraTracking || !wearableTracking) {
+        return "UNAVAILABLE";
+    }
+
+    if (alertActive && cameraState == "ALERT") {
+        return "CONFIRMED";
+    }
+
+    bool wearableChanged =
+        alertActive || counting || currentAngle > TILT_THRESHOLD;
+
+    bool cameraChanged =
+        cameraState == "CHANGED" || cameraState == "ALERT";
+
+    if (!wearableChanged && !cameraChanged) {
+        return "WITHIN_RANGE";
+    }
+
+    if (wearableChanged && cameraChanged) {
+        return "WAITING";
+    }
+
+    return "DISAGREEMENT";
+}
+
+bool wearableMayBeep() {
+    bool cameraTracking = cameraFresh() &&
+        (cameraState == "WITHIN_RANGE" ||
+         cameraState == "CHANGED" ||
+         cameraState == "ALERT");
+
+    return !cameraTracking || cameraState == "ALERT";
+}
+
+bool cameraMayBeep() {
+    bool wearableTracking = tracking && sensorReady;
+    return !wearableTracking || alertActive;
+}
+
+bool cameraTrackingReady() {
+    return cameraFresh() &&
+        (cameraState == "WITHIN_RANGE" ||
+         cameraState == "CHANGED" ||
+         cameraState == "ALERT");
+}
+
+bool soundAlertActive() {
+    bool wearableTracking = tracking && sensorReady;
+    bool cameraTracking = cameraTrackingReady();
+    if (wearableTracking && cameraTracking) {
+        return alertActive && cameraState == "ALERT";
+    }
+    if (wearableTracking) return alertActive;
+    if (cameraTracking) return cameraState == "ALERT";
+    return false;
+}
+
+String getSoundMode() {
+    bool wearableTracking = tracking && sensorReady;
+    bool cameraTracking = cameraTrackingReady();
+    if (wearableTracking && cameraTracking) return "AGREEMENT";
+    if (wearableTracking) return "WEARABLE_ONLY";
+    if (cameraTracking) return "CAMERA_ONLY";
+    return "NO_TRACKING";
+}
+
 // Forward declarations
 bool calibrate();
 void stopTracking();
@@ -85,7 +194,7 @@ bool readAccel(Vec3 &a) {
     if (Wire.endTransmission(false) != 0)
         return false;
 
-    if (Wire.requestFrom(MPU, 6, true) != 6)
+    if (Wire.requestFrom((uint8_t)MPU, (size_t)6, true) != 6)
         return false;
 
     int16_t x = (Wire.read() << 8) | Wire.read();
@@ -154,7 +263,7 @@ String getStatusJson() {
 void notifyBleStatus() {
     if (bleClientConnected && pStatusCharacteristic != nullptr) {
         String json = getStatusJson();
-        pStatusCharacteristic->setValue(json);
+        pStatusCharacteristic->setValue(json.c_str());
         pStatusCharacteristic->notify();
     }
 }
@@ -231,7 +340,8 @@ class BleServerCallbacks : public BLEServerCallbacks {
 
 class BleCmdCallbacks : public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic* pCharacteristic) {
-        String rxValue = pCharacteristic->getValue();
+        auto receivedValue = pCharacteristic->getValue();
+        String rxValue(receivedValue.c_str());
         if (rxValue.length() > 0) {
             rxValue.trim();
             Serial.print("BLE received command: ");
@@ -552,6 +662,52 @@ button.action-btn:active { transform: scale(0.98); }
     <button class="action-btn btn-secondary" onclick="handleStop()">Pause</button>
   </div>
 
+  <!-- Camera readings -->
+  <div class="card">
+    <h2 style="font-size:18px; margin-bottom:12px;">
+      Laptop Camera
+    </h2>
+
+    <div id="camera-status"
+        class="status-badge status-paused">
+      OFFLINE
+    </div>
+
+    <div class="info-row" style="margin-top:12px;">
+      <span>Head-line change</span>
+      <span id="camera-head">--</span>
+    </div>
+
+    <div class="info-row">
+      <span>Shoulder-line change</span>
+      <span id="camera-shoulder">--</span>
+    </div>
+
+    <p style="font-size:12px; color:var(--text-secondary);
+              margin-top:10px;">
+      Run the camera Python program on your laptop.
+      Press C in its preview to recalibrate.
+    </p>
+  </div>
+
+  <!-- Combined assessment -->
+  <div class="card">
+    <h2 style="font-size:18px; margin-bottom:12px;">
+      Camera + Wearable Agreement
+    </h2>
+    <div id="agreement-status" class="status-badge status-paused"
+         role="status" aria-live="polite">CHECKING</div>
+    <p id="agreement-detail"
+       style="font-size:12px; color:var(--text-secondary);
+              margin-top:12px; line-height:1.5;">
+      Waiting for both systems.
+    </p>
+    <p style="font-size:12px; color:var(--text-secondary);
+              margin-top:10px; line-height:1.5;">
+      Both tracking: sound requires agreement. One available: independent alerts.
+    </p>
+  </div>
+
   <!-- Diagnostics -->
   <div class="card">
     <div class="info-row">
@@ -564,7 +720,7 @@ button.action-btn:active { transform: scale(0.98); }
     </div>
     <div class="info-row">
       <span>Alert Threshold</span>
-      <span>20.0° (Reset: 12.0°)</span>
+      <span>10.0° (Reset: 7.0°)</span>
     </div>
   </div>
 
@@ -825,6 +981,124 @@ window.addEventListener('DOMContentLoaded', () => {
     selectMode('wifi');
   }
 });
+
+let cameraPollBusy = false;
+
+async function updateCamera() {
+  if (cameraPollBusy) return;
+  cameraPollBusy = true;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const response = await fetch(
+      getWifiBaseUrl() + '/camera/status',
+      {cache: 'no-store', signal: controller.signal}
+    );
+
+    if (!response.ok) throw new Error('Camera request failed');
+
+    const data = await response.json();
+    const status = document.getElementById('camera-status');
+
+    status.textContent = data.online
+      ? data.state.replaceAll('_', ' ')
+      : 'OFFLINE';
+
+    status.className = 'status-badge ' + (
+      !data.online ||
+      data.state === 'NO_TRACKING' ||
+      data.state === 'CALIBRATING'
+        ? 'status-paused'
+        : data.state === 'ALERT'
+          ? 'status-alert'
+          : 'status-ok'
+    );
+
+    document.getElementById('camera-head').textContent =
+      typeof data.head === 'number'
+        ? data.head.toFixed(1) + '°'
+        : '--';
+
+    document.getElementById('camera-shoulder').textContent =
+      typeof data.shoulder === 'number'
+        ? data.shoulder.toFixed(1) + '°'
+        : '--';
+
+  } catch (error) {
+    const status = document.getElementById('camera-status');
+    status.textContent = 'CONNECTION LOST';
+    status.className = 'status-badge status-paused';
+
+    document.getElementById('camera-head').textContent = '--';
+    document.getElementById('camera-shoulder').textContent = '--';
+
+  } finally {
+    clearTimeout(timeout);
+    cameraPollBusy = false;
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  updateCamera();
+  setInterval(updateCamera, 500);
+});
+
+
+let agreementPollBusy = false;
+
+function renderAgreement(state) {
+  const states = {
+    CONFIRMED: ['CONFIRMED POSTURE CHANGE', 'status-alert',
+      'Both systems detected a sustained posture change.'],
+    WITHIN_RANGE: ['BOTH WITHIN RANGE', 'status-ok',
+      'Both systems report posture within their calibrated ranges.'],
+    WAITING: ['CONFIRMING CHANGE', 'status-paused',
+      'Both detect a change. Waiting for their alert delays.'],
+    DISAGREEMENT: ['WAITING FOR AGREEMENT', 'status-paused',
+      'Only one system detects a change. Combined sound is withheld.'],
+    UNAVAILABLE: ['INSUFFICIENT DATA', 'status-paused',
+      'Both must be tracking for agreement. An available system can alert independently.'],
+    DISCONNECTED: ['CONNECTION LOST', 'status-paused',
+      'Unable to retrieve the combined assessment from the ESP32.']
+  };
+  const result = states[state] || states.UNAVAILABLE;
+  const badge = document.getElementById('agreement-status');
+  badge.textContent = result[0];
+  badge.className = 'status-badge ' + result[1];
+  document.getElementById('agreement-detail').textContent = result[2];
+}
+
+async function updateAgreement() {
+  if (agreementPollBusy) return;
+  agreementPollBusy = true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await fetch(getWifiBaseUrl() + '/agreement/status', {
+      cache: 'no-store', signal: controller.signal
+    });
+    if (!response.ok) throw new Error('Agreement request failed');
+    const data = await response.json();
+    renderAgreement(data.state);
+    if (typeof data.mode === 'string') {
+      document.getElementById('agreement-detail').textContent +=
+        ' Sound mode: ' + data.mode.replaceAll('_', ' ') + '.';
+    }
+  } catch (error) {
+    renderAgreement('DISCONNECTED');
+  } finally {
+    clearTimeout(timeout);
+    agreementPollBusy = false;
+  }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  updateAgreement();
+  setInterval(updateAgreement, 500);
+});
+
 </script>
 </body>
 </html>
@@ -913,6 +1187,72 @@ void setup() {
     });
 
     server.enableCORS(true);
+    server.on("/camera/status", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", getCameraJson());
+});
+
+server.on("/camera/update", HTTP_POST, []() {
+    String state = server.arg("state");
+
+    if (state != "CALIBRATING" &&
+        state != "WITHIN_RANGE" &&
+        state != "CHANGED" &&
+        state != "ALERT" &&
+        state != "NO_TRACKING" &&
+        state != "STOPPED") {
+        server.send(400, "text/plain", "Invalid camera state");
+        return;
+    }
+
+    bool needsAngles =
+        state == "WITHIN_RANGE" ||
+        state == "CHANGED" ||
+        state == "ALERT";
+
+    float head = server.arg("head").toFloat();
+    float shoulder = server.arg("shoulder").toFloat();
+
+    if (needsAngles &&
+        (!server.hasArg("head") ||
+         !server.hasArg("shoulder") ||
+         !isfinite(head) ||
+         !isfinite(shoulder) ||
+         head < 0 || head > 180 ||
+         shoulder < 0 || shoulder > 180)) {
+        server.send(400, "text/plain", "Invalid angles");
+        return;
+    }
+
+    cameraState = state;
+    cameraHead = head;
+    cameraShoulder = shoulder;
+    cameraSeen = state != "STOPPED";
+    cameraUpdated = millis();
+
+    server.send(200, "text/plain", "OK");
+    });
+    server.on("/agreement/status", HTTP_GET, []() {
+        String json = "{\"state\":\"";
+        json += getAgreementState();
+        json += "\",\"mode\":\"";
+        json += getSoundMode();
+        json += "\",\"wearable_tracking\":";
+        json += (tracking && sensorReady) ? "true" : "false";
+        json += ",\"wearable_alert\":";
+        json += (tracking && sensorReady && alertActive) ? "true" : "false";
+        json += ",\"camera_tracking\":";
+        json += cameraTrackingReady() ? "true" : "false";
+        json += ",\"sound_alert_active\":";
+        json += soundAlertActive() ? "true" : "false";
+        json += ",\"camera_beep_allowed\":";
+        json += cameraMayBeep() ? "true" : "false";
+        json += "}";
+
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(200, "application/json", json);
+    });
+
     server.begin();
 
     // 2. Start Bluetooth Low Energy (BLE)
@@ -1028,8 +1368,8 @@ void loop() {
         counting = false;
     }
 
-    // Repeated short beeps
-    if (alertActive &&
+    // When both systems track, require agreement before sounding.
+    if (alertActive && wearableMayBeep() &&
         (newAlert ||
          now - lastBeep >= BEEP_INTERVAL)) {
         beep();
@@ -1101,7 +1441,7 @@ void loop() {
 //     if (Wire.endTransmission(false) != 0)
 //         return false;
 
-//     if (Wire.requestFrom(MPU, 6, true) != 6)
+//     if (Wire.requestFrom((uint8_t)MPU, (size_t)6, true) != 6)
 //         return false;
 
 //     int16_t x = (Wire.read() << 8) | Wire.read();
