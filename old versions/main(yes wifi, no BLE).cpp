@@ -20,8 +20,8 @@ bool sensorReady = false;
 
 // Posture settings
 const float TILT_THRESHOLD = 10.0;
-const float RESET_THRESHOLD = 7.0;
-const unsigned long ALERT_DELAY = 2000;
+const float RESET_THRESHOLD = 9.0;
+const unsigned long ALERT_DELAY = 1000;
 
 // Buzzer settings
 const int BEEP_FREQUENCY = 1000;
