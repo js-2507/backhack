@@ -7,6 +7,8 @@ import urllib.request
 import tempfile
 import wave
 from pathlib import Path
+import requests
+import threading
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -244,6 +246,132 @@ print("Press C to recalibrate. Press Q to quit.")
 started = time.monotonic()
 last_timestamp_ms = -1
 
+ESP32_URL = "http://192.168.4.1"
+
+camera_upload_lock = threading.Lock()
+camera_upload_stop = threading.Event()
+
+camera_upload_data = {
+    "state": "NO_TRACKING",
+    "head": "",
+    "shoulder": "",
+}
+camera_upload_time = 0.0
+wearable_sound_state = {}
+wearable_sound_updated = 0.0
+POLICY_TIMEOUT = 1.5
+
+
+def get_laptop_sound_decision(camera_state, wearable_state, updated, now):
+    """Combine local camera results with recent ESP32 wearable results."""
+    connected = updated > 0 and now - updated < POLICY_TIMEOUT
+    wearable_tracking = connected and wearable_state.get("wearable_tracking") is True
+    wearable_alert = wearable_tracking and wearable_state.get("wearable_alert") is True
+    camera_tracking = camera_state in ("WITHIN_RANGE", "CHANGED", "ALERT")
+    camera_alert = camera_state == "ALERT"
+
+    if wearable_tracking and camera_tracking:
+        if wearable_alert and camera_alert:
+            return True, "Both agree: posture alert"
+        return False, "Both tracking: waiting for agreement"
+    if wearable_tracking:
+        return wearable_alert, "Wearable only: camera not tracking"
+    if camera_tracking:
+        reason = "Camera only: wearable paused or unavailable"
+        if not connected:
+            reason = "Camera only: ESP32 connection unavailable"
+        return camera_alert, reason
+    return False, "No active posture tracking"
+
+
+
+def upload_camera_results():
+    global wearable_sound_state, wearable_sound_updated
+    session = requests.Session()
+    session.trust_env = False
+
+    connection_failed = False
+
+    try:
+        while not camera_upload_stop.is_set():
+            with camera_upload_lock:
+                payload = camera_upload_data.copy()
+                age = time.monotonic() - camera_upload_time
+
+            # Never send old measurements as current camera tracking.
+            if age > 0.75:
+                payload = {
+                    "state": "NO_TRACKING",
+                    "head": "",
+                    "shoulder": "",
+                }
+
+            try:
+                response = session.post(
+                    ESP32_URL + "/camera/update",
+                    data=payload,
+                    timeout=(0.3, 0.5),
+                )
+                response.raise_for_status()
+
+                # Read wearable events, not just camera sound permission.
+                policy_response = session.get(
+                    ESP32_URL + "/agreement/status",
+                    timeout=(0.3, 0.5),
+                )
+                policy_response.raise_for_status()
+                try:
+                    policy = policy_response.json()
+                except ValueError as error:
+                    raise requests.RequestException(
+                        "Invalid ESP32 sound-policy JSON"
+                    ) from error
+
+                if not isinstance(policy, dict) or any(
+                    not isinstance(policy.get(key), bool)
+                    for key in ("wearable_tracking", "wearable_alert")
+                ):
+                    raise requests.RequestException(
+                        "Upload the matching updated main.cpp firmware first"
+                    )
+
+                with camera_upload_lock:
+                    wearable_sound_state = policy
+                    wearable_sound_updated = time.monotonic()
+
+
+                if connection_failed:
+                    print("Camera connection to ESP32 restored.")
+
+                connection_failed = False
+
+            except requests.RequestException as error:
+                if not connection_failed:
+                    print("Camera upload failed:", error)
+
+                connection_failed = True
+
+            camera_upload_stop.wait(0.2)
+
+    finally:
+        try:
+            session.post(
+                ESP32_URL + "/camera/update",
+                data={"state": "STOPPED"},
+                timeout=(0.3, 0.5),
+            )
+        except requests.RequestException:
+            pass
+
+        session.close()
+
+
+camera_upload_thread = threading.Thread(
+    target=upload_camera_results,
+    daemon=True,
+)
+camera_upload_thread.start()
+
 try:
     alert = PostureAlert()
 
@@ -331,7 +459,6 @@ try:
                             last_valid_time is None
                             or now - last_valid_time > 0.75
                         ):
-                            alert.stop()
                             filtered_shoulder = shoulder_angle
                             filtered_neck = neck_angle
                             poor_posture_since = None
@@ -366,7 +493,6 @@ try:
                         )
 
                         if not is_calibrated:
-                            alert.stop()
                             ear_index = candidate_ear
 
                             calibration_shoulder_angles.append(
@@ -418,20 +544,7 @@ try:
                                     status = "Posture reminder"
                                     color = (0, 0, 255)
 
-                                    if (
-                                        now - last_alert_time
-                                        >= ALERT_COOLDOWN
-                                        and not alert.is_playing()
-                                    ):
-                                        print(
-                                            "Sustained posture change detected."
-                                        )
-                                        last_alert_time = now
-                                        alert.start()
                                 else:
-                                    # Do not continue an old alert while
-                                    # waiting for a new sustained change.
-                                    alert.stop()
                                     status = (
                                         f"Posture changed: "
                                         f"{duration:.1f}/{ALERT_DELAY}s"
@@ -439,9 +552,6 @@ try:
                                     color = (0, 165, 255)
 
                             else:
-                                # Cancel all remaining beeps, including
-                                # the sound currently playing.
-                                alert.stop()
 
                                 poor_posture_since = None
                                 status = "Within calibrated range"
@@ -454,7 +564,6 @@ try:
                             ]
 
             if not valid_measurement:
-                alert.stop()
                 poor_posture_since = None
                 last_valid_time = None
 
@@ -495,6 +604,68 @@ try:
                 (255, 255, 255),
                 2,
             )
+            # Convert the existing detection result into a website update.
+            if not valid_measurement:
+                website_camera_state = "NO_TRACKING"
+            elif not is_calibrated:
+                website_camera_state = "CALIBRATING"
+            elif status == "Posture reminder":
+                website_camera_state = "ALERT"
+            elif status.startswith("Posture changed:"):
+                website_camera_state = "CHANGED"
+            elif status == "Within calibrated range":
+                website_camera_state = "WITHIN_RANGE"
+            else:
+                website_camera_state = "CALIBRATING"
+
+            has_camera_angles = website_camera_state in (
+                "WITHIN_RANGE",
+                "CHANGED",
+                "ALERT",
+            )
+
+            with camera_upload_lock:
+                camera_upload_data = {
+                    "state": website_camera_state,
+                    "head": f"{neck_change:.2f}" if has_camera_angles else "",
+                    "shoulder": (
+                        f"{shoulder_change:.2f}" if has_camera_angles else ""
+                    ),
+                }
+                camera_upload_time = time.monotonic()
+
+            # One sound controller handles wearable-only, camera-only,
+            # and agreement alerts. Local pose detection never beeps directly.
+            sound_now = time.monotonic()
+            with camera_upload_lock:
+                wearable_snapshot = wearable_sound_state.copy()
+                policy_updated = wearable_sound_updated
+
+            should_sound, sound_reason = get_laptop_sound_decision(
+                website_camera_state,
+                wearable_snapshot,
+                policy_updated,
+                sound_now,
+            )
+
+            if should_sound:
+                if (
+                    sound_now - last_alert_time >= ALERT_COOLDOWN
+                    and not alert.is_playing()
+                ):
+                    print(sound_reason)
+                    alert.start()
+                    last_alert_time = sound_now
+            else:
+                alert.stop()
+                # A new event can sound immediately after recovery.
+                last_alert_time = float("-inf")
+
+            cv2.putText(
+                frame, sound_reason, (10, height - 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (255, 255, 255), 1, cv2.LINE_AA,
+            )
 
             cv2.imshow("Posture Corrector", frame)
 
@@ -504,7 +675,6 @@ try:
                 break
 
             if key == ord("c"):
-                alert.stop()
 
                 is_calibrated = False
                 calibration_shoulder_angles.clear()
@@ -517,8 +687,9 @@ try:
                 ear_index = None
 
                 print("Recalibrating. Sit upright.")
-
 finally:
+    camera_upload_stop.set()
+    camera_upload_thread.join(timeout=2)
     if alert is not None:
         alert.close()
 
