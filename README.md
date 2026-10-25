@@ -120,14 +120,6 @@ In VS Code, use **Python: Select Interpreter** to choose `.venv` if you prefer t
 
 **macOS:** firmware and the dashboard work independently of this script. The camera script currently imports Windows-only `winsound`; installing more VS Code extensions will not fix that. Its audio implementation must be ported before it can run on macOS.
 
-## Bluetooth and current limitations
-
-The firmware also advertises **Posture-ESP32** over BLE using the Nordic UART Service. For a desktop BLE-only dashboard, serve the repository locally with `python -m http.server 8000` (or `python3` on macOS), open `http://localhost:8000`, and select the Bluetooth tab in a Web Bluetooth-capable browser such as Chrome. Web Bluetooth needs a secure context; the ESP32's plain HTTP address is intended for Wi-Fi mode.
-
-Camera and agreement panels still use HTTP endpoints and will not work through BLE alone. The standalone HTML currently resolves those endpoints relative to its own server, so use the ESP32-hosted dashboard for the complete Wi-Fi experience. Wi-Fi mode is also the simplest phone setup.
-
-The current repo provides dashboard status and buzzer/laptop sounds; it does **not** implement background phone push notifications or SMS.
-
 ## Troubleshooting
 
 - **No serial port:** try a known USB data cable, another USB port, and the driver matching your board's USB bridge.
