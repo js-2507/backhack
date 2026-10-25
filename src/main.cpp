@@ -2,10 +2,6 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 #include <math.h>
 
 // ==========================================
@@ -13,13 +9,6 @@
 // ==========================================
 const char* AP_SSID = "Posture-ESP32";
 const char* AP_PASSWORD = "Posture2026";
-
-// ==========================================
-// BLE SETTINGS (Nordic UART Service standard)
-// ==========================================
-#define BLE_SERVICE_UUID           "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-#define BLE_CHARACTERISTIC_TX_UUID "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // Notify & Read
-#define BLE_CHARACTERISTIC_RX_UUID "6e400002-b5a3-f393-e0a9-e50e24dcca9e" // Write
 
 // Hardware pins
 const int BUZZER = 23;
@@ -44,14 +33,6 @@ const int BEEP_INTERVAL = 150;
 const bool AUTO_START = true;
 
 WebServer server(80);
-
-// BLE Global objects
-BLEServer* pBleServer = nullptr;
-BLECharacteristic* pStatusCharacteristic = nullptr;
-BLECharacteristic* pCmdCharacteristic = nullptr;
-bool bleClientConnected = false;
-bool oldBleClientConnected = false;
-unsigned long lastBleNotify = 0;
 
 struct Vec3 {
     float x, y, z;
@@ -182,7 +163,6 @@ String getSoundMode() {
 // Forward declarations
 bool calibrate();
 void stopTracking();
-void notifyBleStatus();
 
 // ==========================================
 // ACCELEROMETER
@@ -260,20 +240,11 @@ String getStatusJson() {
     return json;
 }
 
-void notifyBleStatus() {
-    if (bleClientConnected && pStatusCharacteristic != nullptr) {
-        String json = getStatusJson();
-        pStatusCharacteristic->setValue(json.c_str());
-        pStatusCharacteristic->notify();
-    }
-}
-
 void stopTracking() {
     tracking = false;
     counting = false;
     alertActive = false;
     digitalWrite(BUZZER, LOW);
-    notifyBleStatus();
 }
 
 // ==========================================
@@ -319,82 +290,11 @@ bool calibrate() {
     Serial.println("CALIBRATED: 0 degrees");
     Serial.println("Tracking started");
 
-    notifyBleStatus();
     return true;
 }
 
 // ==========================================
-// BLE CALLBACKS
-// ==========================================
-class BleServerCallbacks : public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-        bleClientConnected = true;
-        Serial.println("BLE client connected!");
-    }
-
-    void onDisconnect(BLEServer* pServer) {
-        bleClientConnected = false;
-        Serial.println("BLE client disconnected");
-    }
-};
-
-class BleCmdCallbacks : public BLECharacteristicCallbacks {
-    void onWrite(BLECharacteristic* pCharacteristic) {
-        auto receivedValue = pCharacteristic->getValue();
-        String rxValue(receivedValue.c_str());
-        if (rxValue.length() > 0) {
-            rxValue.trim();
-            Serial.print("BLE received command: ");
-            Serial.println(rxValue);
-
-            if (rxValue.equalsIgnoreCase("start") || 
-                rxValue.equalsIgnoreCase("calibrate") || 
-                rxValue.equalsIgnoreCase("/start")) {
-                calibrate();
-            } else if (rxValue.equalsIgnoreCase("stop") || 
-                       rxValue.equalsIgnoreCase("pause") || 
-                       rxValue.equalsIgnoreCase("/stop")) {
-                stopTracking();
-            }
-        }
-    }
-};
-
-void setupBle() {
-    BLEDevice::init("Posture-ESP32");
-    BLEDevice::setMTU(517);
-
-    pBleServer = BLEDevice::createServer();
-    pBleServer->setCallbacks(new BleServerCallbacks());
-
-    BLEService* pService = pBleServer->createService(BLE_SERVICE_UUID);
-
-    pStatusCharacteristic = pService->createCharacteristic(
-        BLE_CHARACTERISTIC_TX_UUID,
-        BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ
-    );
-    pStatusCharacteristic->addDescriptor(new BLE2902());
-
-    pCmdCharacteristic = pService->createCharacteristic(
-        BLE_CHARACTERISTIC_RX_UUID,
-        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
-    );
-    pCmdCharacteristic->setCallbacks(new BleCmdCallbacks());
-
-    pService->start();
-
-    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
-    pAdvertising->addServiceUUID(BLE_SERVICE_UUID);
-    pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);
-    pAdvertising->setMaxPreferred(0x12);
-    BLEDevice::startAdvertising();
-
-    Serial.println("BLE ready: Advertising as 'Posture-ESP32'");
-}
-
-// ==========================================
-// PHONE WEBPAGE (DUAL WI-FI & BLE)
+// WI-FI WEBPAGE
 // ==========================================
 const char PAGE_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <html lang="en">
@@ -453,31 +353,6 @@ h1 {
   border-radius: 16px;
   padding: 18px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-}
-.mode-tabs {
-  display: flex;
-  background: #0f172a;
-  border-radius: 10px;
-  padding: 4px;
-  margin-bottom: 14px;
-}
-.mode-tab {
-  flex: 1;
-  padding: 10px;
-  text-align: center;
-  font-size: 14px;
-  font-weight: 600;
-  border-radius: 8px;
-  cursor: pointer;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  transition: all 0.2s ease;
-}
-.mode-tab.active {
-  background: var(--card-bg);
-  color: var(--accent-cyan);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
 }
 .conn-status-bar {
   display: flex;
@@ -577,21 +452,6 @@ button.action-btn:active { transform: scale(0.98); }
   background: #334155;
   color: #f1f5f9;
 }
-.btn-ble {
-  background: #2563eb;
-  color: white;
-  width: 100%;
-  margin-top: 10px;
-  padding: 12px;
-  border-radius: 10px;
-  border: none;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-ble:hover { background: #1d4ed8; }
-.btn-ble.disconnect { background: #475569; }
-
 .info-row {
   display: flex;
   justify-content: space-between;
@@ -624,26 +484,14 @@ button.action-btn:active { transform: scale(0.98); }
 <div class="app-container">
   <header>
     <h1>Posture Monitor</h1>
-    <div class="subtitle">Dual Wi-Fi & Bluetooth (BLE) Interface</div>
+    <div class="subtitle">Wi-Fi Posture Monitoring</div>
   </header>
 
-  <!-- Connection Controls -->
+  <!-- Wi-Fi connection -->
   <div class="card">
-    <div class="mode-tabs">
-      <button class="mode-tab active" id="tab-wifi" onclick="selectMode('wifi')">Wi-Fi Mode</button>
-      <button class="mode-tab" id="tab-ble" onclick="selectMode('ble')">Bluetooth (BLE)</button>
-    </div>
-
     <div class="conn-status-bar">
       <span id="conn-label"><span class="dot dot-gray" id="conn-dot"></span>Connecting...</span>
-      <span id="transport-badge" style="color: var(--text-secondary); font-size: 11px;">HTTP</span>
-    </div>
-
-    <div id="ble-panel" style="display: none; margin-top: 10px;">
-      <button class="btn-ble" id="btn-ble-toggle" onclick="toggleBle()">Connect via Bluetooth (BLE)</button>
-      <div id="ble-help" style="font-size: 11px; color: var(--text-secondary); margin-top: 8px; text-align: center;">
-        Connect directly without changing your phone's Wi-Fi.
-      </div>
+      <span style="color:var(--text-secondary); font-size:11px;">Wi-Fi</span>
     </div>
   </div>
 
@@ -726,57 +574,21 @@ button.action-btn:active { transform: scale(0.98); }
 
   <!-- Help & Tips -->
   <details class="help-box">
-    <summary>Connection Guide & Compatibility</summary>
-    <p><strong>Wi-Fi Option:</strong> Connect phone to Wi-Fi network <code>Posture-ESP32</code> (Password: <code>Posture2026</code>) and open <code>http://192.168.4.1</code>.</p>
-    <p style="margin-top: 6px;"><strong>BLE Option:</strong> Select the Bluetooth tab and tap 'Connect'. You can keep normal phone internet active!</p>
-    <ul style="margin-top: 6px;">
-      <li><strong>Android:</strong> Works in Chrome, Edge, and Samsung Internet.</li>
-      <li><strong>iPhone / iPad:</strong> Safari does not support Web Bluetooth. Please open this page in the free <em>Bluefy</em> or <em>WebBLE</em> browser app from the App Store.</li>
-      <li><strong>BLE Apps:</strong> You can also connect via <em>nRF Connect</em> or <em>Serial Bluetooth Terminal</em> with Nordic UART UUIDs.</li>
-    </ul>
+    <summary>Wi-Fi Connection Guide</summary>
+    <p>Connect your laptop to <code>Posture-ESP32</code>
+       (Password: <code>Posture2026</code>) and open
+       <code>http://192.168.4.1</code>.</p>
+    <p>Run the camera Python program on that laptop for camera readings
+       and laptop sound. Keep it connected to the ESP32's Wi-Fi.</p>
   </details>
 </div>
 
 <script>
-const NUS_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const NUS_TX_UUID      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Notify from ESP32
-const NUS_RX_UUID      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Commands to ESP32
-
-let currentMode = 'wifi';
-let isBleConnected = false;
-let bleDevice = null;
-let bleServer = null;
-let bleTxChar = null;
-let bleRxChar = null;
-let wifiPollTimer = null;
-
 function getWifiBaseUrl() {
   if (window.location.protocol.startsWith('http') && window.location.hostname !== '') {
     return '';
   }
   return 'http://192.168.4.1';
-}
-
-function selectMode(mode) {
-  currentMode = mode;
-  document.getElementById('tab-wifi').className = 'mode-tab' + (mode === 'wifi' ? ' active' : '');
-  document.getElementById('tab-ble').className = 'mode-tab' + (mode === 'ble' ? ' active' : '');
-  document.getElementById('ble-panel').style.display = (mode === 'ble') ? 'block' : 'none';
-
-  if (mode === 'wifi') {
-    document.getElementById('transport-badge').innerText = 'HTTP (Wi-Fi)';
-    startWifiPolling();
-  } else {
-    stopWifiPolling();
-    document.getElementById('transport-badge').innerText = 'BLE (Nordic UART)';
-    if (!isBleConnected) {
-      updateConnStatus('Disconnected from BLE', 'gray');
-      document.getElementById('active-link').innerText = 'Bluetooth (Disconnected)';
-    } else {
-      updateConnStatus('Connected to Posture-ESP32', 'blue');
-      document.getElementById('active-link').innerText = 'Bluetooth (Connected)';
-    }
-  }
 }
 
 function updateConnStatus(text, color) {
@@ -825,21 +637,7 @@ function parseAndApplyData(data) {
 }
 
 // Wi-Fi polling
-function startWifiPolling() {
-  stopWifiPolling();
-  updateWifi();
-  wifiPollTimer = setInterval(updateWifi, 500);
-}
-
-function stopWifiPolling() {
-  if (wifiPollTimer) {
-    clearInterval(wifiPollTimer);
-    wifiPollTimer = null;
-  }
-}
-
 async function updateWifi() {
-  if (currentMode !== 'wifi') return;
   try {
     const res = await fetch(getWifiBaseUrl() + '/status', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -848,97 +646,11 @@ async function updateWifi() {
     updateConnStatus('Wi-Fi Connected', 'green');
     document.getElementById('active-link').innerText = 'Wi-Fi (AP 192.168.4.1)';
   } catch(e) {
-    if (currentMode === 'wifi') {
-      updateConnStatus('Wi-Fi Disconnected', 'red');
-      document.getElementById('active-link').innerText = 'Wi-Fi (Unavailable)';
-    }
+    updateConnStatus('Wi-Fi Disconnected', 'red');
+    document.getElementById('active-link').innerText = 'Wi-Fi (Unavailable)';
   }
 }
 
-// BLE handling
-async function toggleBle() {
-  if (isBleConnected) {
-    disconnectBle();
-  } else {
-    await connectBle();
-  }
-}
-
-async function connectBle() {
-  if (!navigator.bluetooth) {
-    alert('Web Bluetooth is not supported on this browser.\n\n• Android: Use Chrome or Edge.\n• iPhone/iPad: Open this page in the Bluefy or WebBLE app.\n• Desktop: Use Chrome or Edge.\n• Or use Wi-Fi Mode at http://192.168.4.1');
-    return;
-  }
-
-  const btn = document.getElementById('btn-ble-toggle');
-  btn.innerText = 'Connecting...';
-
-  try {
-    bleDevice = await navigator.bluetooth.requestDevice({
-      filters: [
-        { name: 'Posture-ESP32' },
-        { namePrefix: 'Posture' }
-      ],
-      optionalServices: [NUS_SERVICE_UUID]
-    });
-
-    bleDevice.addEventListener('gattserverdisconnected', onBleDisconnected);
-
-    bleServer = await bleDevice.gatt.connect();
-    const service = await bleServer.getPrimaryService(NUS_SERVICE_UUID);
-    bleTxChar = await service.getCharacteristic(NUS_TX_UUID);
-    bleRxChar = await service.getCharacteristic(NUS_RX_UUID);
-
-    await bleTxChar.startNotifications();
-    bleTxChar.addEventListener('characteristicvaluechanged', (ev) => {
-      const text = new TextDecoder().decode(ev.target.value);
-      parseAndApplyData(text);
-    });
-
-    try {
-      const val = await bleTxChar.readValue();
-      parseAndApplyData(new TextDecoder().decode(val));
-    } catch(e) {}
-
-    isBleConnected = true;
-    btn.innerText = 'Disconnect BLE';
-    btn.className = 'btn-ble disconnect';
-    updateConnStatus('Connected to Posture-ESP32', 'blue');
-    document.getElementById('active-link').innerText = 'Bluetooth (Posture-ESP32)';
-  } catch(err) {
-    console.warn('BLE Connect failed or cancelled:', err);
-    btn.innerText = 'Connect via Bluetooth (BLE)';
-    btn.className = 'btn-ble';
-    if (!isBleConnected) {
-      updateConnStatus('BLE Connection Failed', 'gray');
-    }
-  }
-}
-
-function disconnectBle() {
-  if (bleDevice && bleDevice.gatt.connected) {
-    bleDevice.gatt.disconnect();
-  }
-  onBleDisconnected();
-}
-
-function onBleDisconnected() {
-  isBleConnected = false;
-  bleServer = null;
-  bleTxChar = null;
-  bleRxChar = null;
-  const btn = document.getElementById('btn-ble-toggle');
-  if (btn) {
-    btn.innerText = 'Connect via Bluetooth (BLE)';
-    btn.className = 'btn-ble';
-  }
-  if (currentMode === 'ble') {
-    updateConnStatus('BLE Disconnected', 'gray');
-    document.getElementById('active-link').innerText = 'Bluetooth (Disconnected)';
-  }
-}
-
-// Commands
 async function handleStart() {
   await sendCommand('start');
 }
@@ -948,38 +660,21 @@ async function handleStop() {
 }
 
 async function sendCommand(cmd) {
-  if (currentMode === 'ble') {
-    if (!bleRxChar) {
-      alert('Bluetooth not connected! Please tap "Connect via Bluetooth (BLE)" first, or switch to Wi-Fi mode.');
-      return;
-    }
-    try {
-      const enc = new TextEncoder();
-      await bleRxChar.writeValue(enc.encode(cmd + '\n'));
-    } catch(e) {
-      console.error('BLE write failed:', e);
-    }
-  } else {
-    try {
-      await fetch(getWifiBaseUrl() + '/' + cmd, { method: 'POST' });
-      updateWifi();
-    } catch(e) {
-      console.error('Wi-Fi command failed:', e);
-    }
+  try {
+    const response = await fetch(getWifiBaseUrl() + '/' + cmd, {
+      method: 'POST'
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    await updateWifi();
+  } catch (error) {
+    console.error('Wi-Fi command failed:', error);
+    updateConnStatus('Command failed: check Wi-Fi connection', 'red');
   }
 }
 
-// Auto detect mode on page load
 window.addEventListener('DOMContentLoaded', () => {
-  const isHttpLocal = window.location.protocol.startsWith('http') && 
-                      (window.location.hostname === '192.168.4.1' || window.location.hostname === 'localhost');
-  if (isHttpLocal) {
-    selectMode('wifi');
-  } else if (!window.location.protocol.startsWith('http')) {
-    selectMode('ble');
-  } else {
-    selectMode('wifi');
-  }
+  updateWifi();
+  setInterval(updateWifi, 500);
 });
 
 let cameraPollBusy = false;
@@ -1255,9 +950,6 @@ server.on("/camera/update", HTTP_POST, []() {
 
     server.begin();
 
-    // 2. Start Bluetooth Low Energy (BLE)
-    setupBle();
-
     // Automatic calibration after startup
     if (AUTO_START && sensorReady) {
         Serial.println("Starting in 3 seconds...");
@@ -1268,8 +960,7 @@ server.on("/camera/update", HTTP_POST, []() {
 
     Serial.println("=========================================");
     Serial.println("POSTURE DETECTOR READY");
-    Serial.println("Option 1: Wi-Fi 'Posture-ESP32' -> http://192.168.4.1");
-    Serial.println("Option 2: BLE 'Posture-ESP32' via Web Bluetooth / App");
+    Serial.println("Wi-Fi 'Posture-ESP32' -> http://192.168.4.1");
     Serial.println("=========================================");
 }
 
@@ -1279,18 +970,6 @@ server.on("/camera/update", HTTP_POST, []() {
 void loop() {
     // Phone Wi-Fi requests are handled continuously
     server.handleClient();
-
-    // Handle BLE advertising restart on client disconnect
-    if (!bleClientConnected && oldBleClientConnected) {
-        delay(500); // give bluetooth stack a moment
-        pBleServer->startAdvertising();
-        Serial.println("Restarted BLE advertising");
-        oldBleClientConnected = bleClientConnected;
-    }
-    if (bleClientConnected && !oldBleClientConnected) {
-        oldBleClientConnected = bleClientConnected;
-        notifyBleStatus();
-    }
 
     unsigned long now = millis();
 
@@ -1305,10 +984,6 @@ void loop() {
     }
 
     if (!tracking) {
-        if (bleClientConnected && (now - lastBleNotify >= 500)) {
-            notifyBleStatus();
-            lastBleNotify = now;
-        }
         delay(20);
         return;
     }
@@ -1376,18 +1051,11 @@ void loop() {
         lastBeep = millis();
     }
 
-    // Send BLE status update (every 250ms or immediately on new alert)
-    if (bleClientConnected && (now - lastBleNotify >= 250 || newAlert)) {
-        notifyBleStatus();
-        lastBleNotify = now;
-    }
-
     if (now - lastPrint >= 500) {
         Serial.printf(
-            "Angle: %.1f | Alert: %s | BLE: %s\n",
+            "Angle: %.1f | Alert: %s\n",
             currentAngle,
-            alertActive ? "ON" : "OFF",
-            bleClientConnected ? "CONNECTED" : "OFF"
+            alertActive ? "ON" : "OFF"
         );
 
         lastPrint = now;
@@ -1395,278 +1063,3 @@ void loop() {
 
     delay(20);
 }
-
-// #include <Arduino.h>
-// #include <Wire.h>
-// #include <math.h>
-
-// // Pin configuration
-// const int BUZZER = 23;       // GPIO18
-// const int SDA_PIN = 21;
-// const int SCL_PIN = 22;
-
-// int MPU = 0x68;
-
-// // Posture detection settings
-// const float TILT_THRESHOLD = 20.0;
-// const float RESET_THRESHOLD = 12.0;
-// const unsigned long ALERT_DELAY = 2000;
-
-// // Buzzer settings
-// const int BEEP_FREQUENCY = 1000;  // Hz
-// const int BEEP_DUTY = 5;        // Lower = potentially softer
-// const int BEEP_DURATION = 15;    // ms
-// const int BEEP_INTERVAL = 150;   // ms
-
-// struct Vec3 {
-//     float x, y, z;
-// };
-
-// Vec3 baseline;
-// Vec3 filtered;
-
-// bool tracking = false;
-// bool counting = false;
-// bool alertActive = false;
-
-// unsigned long tiltStart = 0;
-// unsigned long lastBeep = 0;
-// unsigned long lastPrint = 0;
-
-// // Read MPU-6050 acceleration
-// bool readAccel(Vec3 &a) {
-//     Wire.beginTransmission(MPU);
-//     Wire.write(0x3B);
-
-//     if (Wire.endTransmission(false) != 0)
-//         return false;
-
-//     if (Wire.requestFrom((uint8_t)MPU, (size_t)6, true) != 6)
-//         return false;
-
-//     int16_t x = (Wire.read() << 8) | Wire.read();
-//     int16_t y = (Wire.read() << 8) | Wire.read();
-//     int16_t z = (Wire.read() << 8) | Wire.read();
-
-//     a = {
-//         x / 16384.0f,
-//         y / 16384.0f,
-//         z / 16384.0f
-//     };
-
-//     return true;
-// }
-
-// // Normalize acceleration vector
-// Vec3 normalize(Vec3 v) {
-//     float m = sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
-
-//     if (m < 0.01f)
-//         return {0, 0, 0};
-
-//     return {v.x/m, v.y/m, v.z/m};
-// }
-
-// // Generate short, low-duty-cycle beep
-// void beep() {
-//     int period = 1000000 / BEEP_FREQUENCY;
-//     int onTime = period * BEEP_DUTY / 100;
-//     int offTime = period - onTime;
-//     int cycles = BEEP_DURATION * 1000 / period;
-
-//     for (int i = 0; i < cycles; i++) {
-//         digitalWrite(BUZZER, HIGH);
-//         delayMicroseconds(onTime);
-
-//         digitalWrite(BUZZER, LOW);
-//         delayMicroseconds(offTime);
-//     }
-
-//     digitalWrite(BUZZER, LOW);
-// }
-
-// // Calibrate current position to 0 degrees
-// void calibrate() {
-//     tracking = false;
-//     counting = false;
-//     alertActive = false;
-//     digitalWrite(BUZZER, LOW);
-
-//     Serial.println("Calibrating... Keep sensor upright!");
-
-//     Vec3 sum = {0, 0, 0};
-
-//     for (int i = 0; i < 100; i++) {
-//         Vec3 a;
-
-//         if (!readAccel(a)) {
-//             Serial.println("Calibration failed!");
-//             return;
-//         }
-
-//         sum.x += a.x;
-//         sum.y += a.y;
-//         sum.z += a.z;
-
-//         delay(10);
-//     }
-
-//     baseline = normalize(sum);
-
-//     if (baseline.x == 0 &&
-//         baseline.y == 0 &&
-//         baseline.z == 0) {
-//         Serial.println("Invalid calibration!");
-//         return;
-//     }
-
-//     filtered = baseline;
-
-//     tiltStart = 0;
-//     lastBeep = 0;
-//     tracking = true;
-
-//     Serial.println("CALIBRATED: 0 degrees");
-//     Serial.println("Posture tracking started!");
-//     Serial.println("Type R to recalibrate.");
-// }
-
-// void setup() {
-//     Serial.begin(115200);
-//     Wire.begin(SDA_PIN, SCL_PIN);
-
-//     pinMode(BUZZER, OUTPUT);
-//     digitalWrite(BUZZER, LOW);
-
-//     delay(1000);
-
-//     // Detect MPU-6050 address
-//     Wire.beginTransmission(0x68);
-
-//     if (Wire.endTransmission() != 0) {
-//         MPU = 0x69;
-//         Wire.beginTransmission(MPU);
-
-//         if (Wire.endTransmission() != 0) {
-//             Serial.println("MPU6050 NOT FOUND!");
-//             while (true) delay(1000);
-//         }
-//     }
-
-//     // Wake accelerometer
-//     Wire.beginTransmission(MPU);
-//     Wire.write(0x6B);
-//     Wire.write(0x00);
-
-//     if (Wire.endTransmission() != 0) {
-//         Serial.println("MPU wake failed!");
-//         while (true) delay(1000);
-//     }
-
-//     Serial.println("-------------------------");
-//     Serial.println("POSTURE DETECTOR READY");
-//     Serial.println("Sit upright.");
-//     Serial.println("Type S + Enter to START");
-//     Serial.println("-------------------------");
-// }
-
-// void loop() {
-//     // Handle start and recalibration commands
-//     while (Serial.available()) {
-//         char command = Serial.read();
-
-//         if (command == 'S' || command == 's' ||
-//             command == 'R' || command == 'r') {
-//             calibrate();
-//         }
-//     }
-
-//     if (!tracking) {
-//         delay(20);
-//         return;
-//     }
-
-//     Vec3 a;
-
-//     if (!readAccel(a)) {
-//         counting = false;
-//         alertActive = false;
-//         digitalWrite(BUZZER, LOW);
-//         Serial.println("Sensor read failed");
-//         delay(100);
-//         return;
-//     }
-
-//     a = normalize(a);
-
-//     float magnitude = sqrt(a.x*a.x + a.y*a.y + a.z*a.z);
-
-//     if (magnitude < 0.01f) {
-//         counting = false;
-//         alertActive = false;
-//         digitalWrite(BUZZER, LOW);
-//         delay(100);
-//         return;
-//     }
-
-//     // Smooth acceleration readings
-//     filtered.x = 0.8f*filtered.x + 0.2f*a.x;
-//     filtered.y = 0.8f*filtered.y + 0.2f*a.y;
-//     filtered.z = 0.8f*filtered.z + 0.2f*a.z;
-//     filtered = normalize(filtered);
-
-//     // Calculate angle relative to calibrated position
-//     float dot =
-//         baseline.x * filtered.x +
-//         baseline.y * filtered.y +
-//         baseline.z * filtered.z;
-
-//     dot = constrain(dot, -1.0f, 1.0f);
-
-//     float angle = acos(dot) * 180.0f / PI;
-
-//     unsigned long now = millis();
-//     bool newAlert = false;
-
-//     // Detect sustained tilt
-//     if (angle > TILT_THRESHOLD) {
-//         if (!counting) {
-//             counting = true;
-//             tiltStart = now;
-//         }
-
-//         if (!alertActive &&
-//             now - tiltStart >= ALERT_DELAY) {
-//             alertActive = true;
-//             newAlert = true;
-//         }
-//     }
-//     else if (angle < RESET_THRESHOLD) {
-//         counting = false;
-//         alertActive = false;
-//     }
-//     else if (!alertActive) {
-//         counting = false;
-//     }
-
-//     // Repeat beep every 250 ms while tilted
-//     if (alertActive &&
-//         (newAlert || now - lastBeep >= BEEP_INTERVAL)) {
-//         beep();
-//         lastBeep = millis();
-//     }
-
-//     // Print angle and alert status
-//     if (now - lastPrint >= 200) {
-//         Serial.printf(
-//             "Angle: %.1f | Alert: %s\n",
-//             angle,
-//             alertActive ? "ON" : "OFF"
-//         );
-
-//         lastPrint = now;
-//     }
-
-//     delay(20);
-// }
-
